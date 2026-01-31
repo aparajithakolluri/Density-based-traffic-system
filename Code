@@ -1,0 +1,183 @@
+#include <TM1637Display.h>
+
+// TM1637 pins
+#define CLK 1   // Connect to digital pin 1
+#define DIO 2   // Connect to digital pin 2
+
+TM1637Display display(CLK, DIO);
+
+// Traffic light pins
+int red1=8, yellow1=7, green1=6;     // Side 1
+int red2=3, yellow2=4, green2=5;     // Side 2
+
+// Ultrasonic sensor pins
+const int pingPin1 = 10; // Trigger for sensor 1
+const int echoPin1 = 9;  // Echo for sensor 1
+const int pingPin2 = 12; // Trigger for sensor 2
+const int echoPin2 = 11; // Echo for sensor 2
+
+// Thresholds for traffic density (cm)
+const int HIGH_DISTANCE = 10;    // Close vehicles => high traffic
+const int MEDIUM_DISTANCE = 5;  // Medium traffic
+
+// Durations based on traffic density (seconds)
+const int RED_HIGH = 10;
+const int RED_MEDIUM = 20;
+const int RED_LOW = 20;
+
+const int GREEN_HIGH = 30;
+const int GREEN_MEDIUM = 20;
+const int GREEN_LOW = 10;
+
+// Yellow duration (seconds)
+const int YELLOW_DURATION = 3;
+
+// State tracking
+String currentSignal = "GREEN"; // "GREEN", "YELLOW", or "RED"
+int activeSide = 1;             // 1 or 2: which side is/was green
+unsigned long previousMillis = 0;
+int countdownSeconds = 0;
+bool timerRunning = false;
+
+// Function to measure distance in cm
+long getDistance(int triggerPin, int echoPin) {
+  pinMode(triggerPin, OUTPUT);
+  digitalWrite(triggerPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(triggerPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(triggerPin, LOW);
+  pinMode(echoPin, INPUT);
+  long duration = pulseIn(echoPin, HIGH, 30000); // Timeout after 30ms
+  long cm = duration / 29 / 2;
+  if (cm == 0) cm = 1; // prevent zero
+  return cm;
+}
+
+// Determine traffic level (1=L, 2=M, 3=H)
+int getTrafficLevel(int distance) {
+  if (distance < HIGH_DISTANCE) return 3;
+  if (distance < MEDIUM_DISTANCE) return 2;
+  return 1;
+}
+
+// Decide duration based on signal and traffic level
+int getDuration(String signal, int level) {
+  if (signal == "RED") {
+    if (level == 3) return RED_HIGH;
+    if (level == 2) return RED_MEDIUM;
+    return RED_LOW;
+  } else if (signal == "GREEN") {
+    if (level == 3) return GREEN_HIGH;
+    if (level == 2) return GREEN_MEDIUM;
+    return GREEN_LOW;
+  }
+  return 30; // default
+}
+
+// Display countdown timer on TM1637: [S][P][MM][SS]
+// S = Side (1 or 2), P = Phase (G/y/r), MMSS = time in seconds
+void displayCountdown(String phase, int side, int seconds) {
+  uint8_t data[4];
+
+  // Avoid macro name conflict by using different names
+  const uint8_t SEG_G_CHAR = 0b01011111; // a b c d e f g  (segments: a,b,c,d,e,f)
+  const uint8_t SEG_Y_CHAR = 0b01101110; // segments: b,c,d,e,g
+  const uint8_t SEG_R_CHAR = 0b01010000; // segments: e,g
+
+  data[0] = display.encodeDigit(side); // S1/S2
+  if (phase == "GREEN")      data[1] = SEG_G_CHAR;
+  else if (phase == "YELLOW")data[1] = SEG_Y_CHAR;
+  else                       data[1] = SEG_R_CHAR;
+  data[2] = display.encodeDigit((seconds / 10) % 10);
+  data[3] = display.encodeDigit(seconds % 10);
+  display.setBrightness(0x0f);
+  display.setSegments(data);
+}
+
+// Set the lights according to the desired state
+void setLights(String phase, int active) {
+  int r1 = LOW, y1 = LOW, g1 = LOW;
+  int r2 = LOW, y2 = LOW, g2 = LOW;
+
+  if (phase == "GREEN") {
+    if (active == 1) {
+      g1 = HIGH; r2 = HIGH;
+    } else {
+      g2 = HIGH; r1 = HIGH;
+    }
+  } else if (phase == "YELLOW") {
+    y1 = HIGH; y2 = HIGH;
+  } else if (phase == "RED") {
+    if (active == 1) {
+      g2 = HIGH; r1 = HIGH;
+    } else {
+      g1 = HIGH; r2 = HIGH;
+    }
+  }
+
+  digitalWrite(red1, r1); digitalWrite(yellow1, y1); digitalWrite(green1, g1);
+  digitalWrite(red2, r2); digitalWrite(yellow2, y2); digitalWrite(green2, g2);
+}
+
+void setup() {
+  pinMode(red1, OUTPUT); pinMode(yellow1, OUTPUT); pinMode(green1, OUTPUT);
+  pinMode(red2, OUTPUT); pinMode(yellow2, OUTPUT); pinMode(green2, OUTPUT);
+  pinMode(pingPin1, OUTPUT); pinMode(echoPin1, INPUT);
+  pinMode(pingPin2, OUTPUT); pinMode(echoPin2, INPUT);
+  display.setBrightness(0x0f);
+  display.showNumberDec(8888); // Test
+  delay(1000);
+  display.clear();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // Get distances and levels (always update)
+  int dist1 = getDistance(pingPin1, echoPin1);
+  int dist2 = getDistance(pingPin2, echoPin2);
+  int level1 = getTrafficLevel(dist1);
+  int level2 = getTrafficLevel(dist2);
+
+  if (!timerRunning) {
+    // Decide which side gets green based on traffic (smaller distance -> more traffic)
+    activeSide = (dist1 <= dist2) ? 1 : 2;
+    currentSignal = "GREEN";
+    countdownSeconds = getDuration("GREEN", activeSide == 1 ? level1 : level2);
+    setLights(currentSignal, activeSide);
+    displayCountdown(currentSignal, activeSide, countdownSeconds);
+    previousMillis = now;
+    timerRunning = true;
+  }
+
+  if (timerRunning && (now - previousMillis >= 1000)) {
+    previousMillis = now;
+    if (countdownSeconds > 0) {
+      countdownSeconds--;
+      displayCountdown(currentSignal, activeSide, countdownSeconds);
+    } else {
+      // Phase switching
+      if (currentSignal == "GREEN") {
+        currentSignal = "YELLOW";
+        countdownSeconds = YELLOW_DURATION;
+        setLights(currentSignal, activeSide);
+        displayCountdown(currentSignal, activeSide, countdownSeconds);
+      } else if (currentSignal == "YELLOW") {
+        currentSignal = "RED";
+        countdownSeconds = getDuration("RED", activeSide == 1 ? level1 : level2);
+        setLights(currentSignal, activeSide);
+        displayCountdown(currentSignal, activeSide == 1 ? 2 : 1, countdownSeconds); // Show the now green side
+      } else if (currentSignal == "RED") {
+        // Switch sides
+        activeSide = (activeSide == 1) ? 2 : 1;
+        currentSignal = "GREEN";
+        countdownSeconds = getDuration("GREEN", activeSide == 1 ? level1 : level2);
+        setLights(currentSignal, activeSide);
+        displayCountdown(currentSignal, activeSide, countdownSeconds);
+      }
+    }
+  }
+
+  delay(50); // Small delay to stabilize
+}
