@@ -128,9 +128,4 @@ The Arduino sketch will typically follow these steps:
 Contributions are welcome! If you have suggestions for improvements, new features, or bug fixes, please open an issue or submit a pull request.
 
 
-This project is open-source and available under the [MIT License](LICENSE).
 
----
-
-**Feel free to replace placeholders like `your-username` and add a `LICENSE` file.** You should also definitely add a good image of your circuit and possibly a video demonstration to your GitHub repository!
-```
